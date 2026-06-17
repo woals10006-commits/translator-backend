@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(npm create *)",
+      "PowerShell(gradle --version)",
+      "PowerShell(java --version)",
+      "PowerShell(Invoke-WebRequest -Uri \"https://github.com/gradle/gradle/raw/v8.10.0/gradle/wrapper/gradle-wrapper.jar\" -OutFile \"C:\\\\translator-backend\\\\gradle\\\\wrapper\\\\gradle-wrapper.jar\")",
+      "PowerShell(java -version)",
+      "PowerShell(Get-Command java)",
+      "PowerShell($env:JAVA_HOME)",
+      "PowerShell($env:JAVA_HOME = \"C:\\\\Program Files\\\\Java\\\\jdk-17\"; Set-Location C:\\\\translator-backend; & \"C:\\\\translator-backend\\\\gradlew.bat\" bootRun)",
+      "PowerShell(Get-Process -Name java -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force)",
+      "PowerShell([System.Environment]::SetEnvironmentVariable\\(\"JAVA_HOME\", \"C:\\\\Program Files\\\\Java\\\\jdk-17\", \"User\"\\))"
+    ],
+    "additionalDirectories": [
+      "c:\\translator-backend\\src\\main\\java\\com\\translator\\service",
+      "C:\\translator-backend\\gradle\\wrapper",
+      "C:\\translator-backend"
+    ]
+  }
+}
