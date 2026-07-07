@@ -1,0 +1,57 @@
+==================================================
+  [다른 컴퓨터의 Claude(claude.ai)에게 붙여넣는 용도]
+
+  사용법: 새 컴퓨터에서 claude.ai 를 열고,
+  아래 "===여기부터===" 밑의 내용을 통째로 복사해서
+  Claude 채팅창에 붙여넣으세요. 그리고 궁금한 걸 물어보면 됩니다.
+==================================================
+
+
+===여기부터===
+
+안녕. 나는 다른 컴퓨터에서 만든 프로그램 2개를 이 새 컴퓨터에
+설치하려고 해. 초보자라서 하나씩 알려줘. 상황은 이래:
+
+[프로그램 1 - 이슈단어 체크]
+- 원고(.docx) 안에 이슈단어 목록(.txt)에 있는 단어가 몇 번 나오는지
+  세어주는 프로그램.
+- "index.html" 파일 하나가 전부이고, 설치할 게 전혀 없음.
+- 그냥 index.html 을 더블클릭해서 웹브라우저(Edge)로 열면 실행됨.
+- 화면에서 txt 파일과 docx 파일을 넣고 "이슈단어 찾기" 버튼을 누르면
+  결과(단어 + 나온 횟수)가 나옴.
+
+[프로그램 2 - 중국어→한국어 번역기]
+- 워드(.docx)를 올리면 중국어를 한국어로 번역해 다시 워드로 내려주는 웹앱.
+- 두 폴더로 되어 있음:
+   (a) translator-backend  : 번역 엔진. Spring Boot(자바) + Gradle,
+       Java 17 필요. IntelliJ로 열어서 TranslatorApplication 을 실행.
+       API 키는 코드에 없고, 윈도우 환경변수 "CLAUDE_API_KEY" 로 넣음.
+       (application.properties 에 claude.api.key=${CLAUDE_API_KEY:} 로 되어 있음)
+       서버는 http://localhost:8080 에서 돎.
+       ※ gradle.properties 에 자바 경로가
+         org.gradle.java.home=C:\\Program Files\\Java\\jdk-17
+         로 하드코딩 돼 있어서, JDK 17 실제 설치 경로와 안 맞으면
+         이 줄을 실제 경로로 고쳐야 함.
+   (b) translator-frontend : 화면. React + Vite, Node.js 필요.
+       VS Code로 열어서 터미널에 "npm install" 후 "npm run dev".
+       http://localhost:5173 에서 열림. 백엔드 주소(localhost:8080)를
+       코드에 직접 박아둠(App.jsx).
+- 번역은 Claude(Anthropic) API를 사용해서 돈이 나감
+  (claude-haiku-4-5 기준 100화에 약 $6).
+
+[새 컴퓨터에 설치해야 하는 것]
+- 번역기용: JDK 17, IntelliJ IDEA Community(무료), Node.js(LTS),
+  VS Code, 그리고 Anthropic API 키(sk-ant-...로 시작).
+- 이슈단어용: 아무것도 설치 안 함(Edge 브라우저만).
+
+[가져온 파일]
+- index.html (이슈단어 프로그램)
+- translator-backend.zip, translator-frontend.zip (번역기, 압축 풀어서 사용.
+  node_modules 와 build 폴더는 일부러 뺐고, npm install / Gradle 이
+  새로 만들어줌.)
+- 설치방법.txt (각 프로그램용 상세 안내문. 이것도 같이 가져옴.)
+
+지금 내가 하려는 것: (여기에 지금 하고 싶은 걸 적으세요.
+예: "번역기 백엔드를 IntelliJ에서 실행하려는데 자바 오류가 나" 등)
+
+===여기까지===

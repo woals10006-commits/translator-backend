@@ -231,8 +231,9 @@ public class TranslatorService {
         // heading pattern never fires, chapterCount stays 0, maxChapters is
         // ignored, and the entire book gets translated instead of N chapters.
         String text = paragraph.getText().replace(' ', ' ').replace('　', ' ').trim();
-        // Unambiguous chapter markers: 第N章 / Chapter N / N화 / N장.
-        if (text.matches("^(第?\\d+[章话話集回]|Chapter\\s*\\d+|\\d+화|\\d+장).*")) return true;
+        // Unambiguous chapter markers. N may be Arabic (第1章) or Chinese numerals
+        // (第一章 / 第二十章) — many novels use the latter, so \d+ alone misses them.
+        if (text.matches("^(第[一二三四五六七八九十百千零〇两\\d]+[章回話话節节集卷篇]|\\d+[章话話集回]|Chapter\\s*\\d+|\\d+화|\\d+장).*")) return true;
         // "1.  제목" style headings are ambiguous, so accept one only when its
         // number is the next expected chapter (sequential numbering).
         Matcher m = NUMBERED_HEADING.matcher(text);

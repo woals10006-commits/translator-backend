@@ -21,6 +21,15 @@ public class GeminiService {
     private static final Logger log = LoggerFactory.getLogger(GeminiService.class);
     private static final int MAX_TOKENS = 8192;
 
+    // Pins the target language. Without it Haiku sometimes emits Japanese for
+    // kanji-heavy or ambiguous segments (names, short phrases), since Chinese
+    // and Japanese share Han characters. Applied to every call.
+    private static final String SYSTEM_PROMPT =
+        "당신은 전문 번역가입니다. 입력 텍스트를 자연스러운 한국어로 번역합니다. " +
+        "출력은 반드시 한국어(한글)로만 작성하세요. 일본어·중국어·영어 등 다른 언어로 출력하지 마세요. " +
+        "원문에 일본어나 다른 언어가 섞여 있어도 모두 한국어로 번역하세요. " +
+        "인명·지명 등 고유명사도 한국어로 표기하세요.";
+
     @Value("${claude.api.key}")
     private String apiKey;
 
@@ -39,6 +48,7 @@ public class GeminiService {
     public List<String> translateBatch(List<String> texts, TranslationJob job) throws Exception {
         StringBuilder prompt = new StringBuilder(
             "다음 중국어 텍스트 " + texts.size() + "개를 각각 한국어로 번역하세요.\n" +
+            "번역 결과는 반드시 한국어로만 작성하고, 일본어·중국어를 그대로 두지 마세요.\n" +
             "translations 배열에 입력 순서 그대로 " + texts.size() + "개의 번역을 넣으세요. " +
             "문단을 합치거나 나누지 마세요.\n\n"
         );
@@ -72,7 +82,7 @@ public class GeminiService {
         List<String> results = new ArrayList<>();
         for (String text : texts) {
             try {
-                results.add(callClaude("다음 중국어를 한국어로 번역해주세요. 번역문만 출력하세요:\n\n" + text, job, null));
+                results.add(callClaude("다음 중국어를 한국어로 번역해주세요. 반드시 한국어로만, 번역문만 출력하세요:\n\n" + text, job, null));
             } catch (Exception e) {
                 results.add(text);
             }
@@ -109,6 +119,7 @@ public class GeminiService {
         Map<String, Object> body = new HashMap<>();
         body.put("model", "claude-haiku-4-5-20251001");
         body.put("max_tokens", MAX_TOKENS);
+        body.put("system", SYSTEM_PROMPT);
         body.put("messages", List.of(message));
         if (outputConfig != null) {
             body.put("output_config", outputConfig);
@@ -125,7 +136,12 @@ public class GeminiService {
         for (int i = 0; i < maxRetries; i++) {
             try {
                 Thread.sleep(300);
-                ResponseEntity<String> response = restTemplate.postForEntity(url, request, String.class);
+                // Read the reply as raw bytes and let Jackson decode the UTF-8
+                // JSON itself. Receiving it as String.class routes through Spring's
+                // StringHttpMessageConverter, whose default charset is ISO-8859-1;
+                // the API sends UTF-8 with no charset in Content-Type, so the
+                // Korean/Chinese would be decoded wrong and come out as mojibake.
+                ResponseEntity<byte[]> response = restTemplate.postForEntity(url, request, byte[].class);
                 JsonNode root = objectMapper.readTree(response.getBody());
                 // Accumulate token usage for exact per-job cost measurement.
                 if (job != null) {
