@@ -29,13 +29,20 @@ public class TranslatorController {
     @PostMapping("/translate")
     public ResponseEntity<Map<String, String>> startTranslation(
             @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "maxChapters", defaultValue = "100") int maxChapters) throws Exception {
+            @RequestParam(value = "startChapter", defaultValue = "1") int startChapter,
+            @RequestParam(value = "endChapter", defaultValue = "100") int endChapter,
+            @RequestParam(value = "customPrompt", required = false, defaultValue = "") String customPrompt) throws Exception {
+
+        // Guard against inverted or non-positive input.
+        if (startChapter < 1) startChapter = 1;
+        if (endChapter < startChapter) endChapter = startChapter;
 
         String jobId = UUID.randomUUID().toString();
         TranslationJob job = new TranslationJob(jobId);
         jobStore.save(job);
 
-        translatorService.translateAsync(jobId, file.getBytes(), maxChapters);
+        translatorService.translateAsync(jobId, file.getBytes(), startChapter, endChapter,
+                customPrompt, file.getOriginalFilename());
 
         Map<String, String> response = new HashMap<>();
         response.put("jobId", jobId);
@@ -52,6 +59,7 @@ public class TranslatorController {
         response.put("done", job.isDone());
         response.put("error", job.getError());
         response.put("errorCount", job.getErrorCount());
+        response.put("savedPath", job.getSavedPath());
         return ResponseEntity.ok(response);
     }
 

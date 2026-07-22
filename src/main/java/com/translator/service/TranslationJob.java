@@ -10,6 +10,9 @@ public class TranslationJob {
     private volatile String error;
     private volatile byte[] result;
     private volatile int errorCount;
+    // Absolute path where the finished .docx was auto-saved on disk, so the
+    // result survives even if the browser never downloads it.
+    private volatile String savedPath;
 
     // Token usage accumulates across all concurrent API calls for this job, so
     // it must be thread-safe. Used to compute the exact credit cost per run.
@@ -31,6 +34,9 @@ public class TranslationJob {
     public void setResult(byte[] r) { result = r; }
     public int getErrorCount() { return errorCount; }
     public void addErrorCount(int n) { errorCount += n; }
+    public void setErrorCount(int n) { errorCount = n; }
+    public String getSavedPath() { return savedPath; }
+    public void setSavedPath(String p) { savedPath = p; }
 
     public void addTokens(long in, long out) {
         inputTokens.addAndGet(in);

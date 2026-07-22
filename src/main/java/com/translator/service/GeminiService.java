@@ -19,16 +19,24 @@ import java.util.Map;
 public class GeminiService {
 
     private static final Logger log = LoggerFactory.getLogger(GeminiService.class);
-    private static final int MAX_TOKENS = 8192;
+    // Literary translation runs a bit longer than the source, so give ample
+    // headroom to avoid truncating a chunk mid-sentence (you only pay for tokens
+    // actually generated). Non-streaming, so kept at/under ~16K per SDK guidance.
+    private static final int MAX_TOKENS = 16000;
 
-    // Pins the target language. Without it Haiku sometimes emits Japanese for
-    // kanji-heavy or ambiguous segments (names, short phrases), since Chinese
-    // and Japanese share Han characters. Applied to every call.
+    // The system prompt does two jobs: (1) pin the target to published-novel
+    // Korean with proofreading and consistent tone, and (2) hard-lock the output
+    // language. Han characters are shared between Chinese and Japanese, so
+    // without an explicit language lock the model can emit Japanese for ambiguous
+    // kanji-heavy segments (names, short phrases). Applied to every call.
     private static final String SYSTEM_PROMPT =
-        "당신은 전문 번역가입니다. 입력 텍스트를 자연스러운 한국어로 번역합니다. " +
-        "출력은 반드시 한국어(한글)로만 작성하세요. 일본어·중국어·영어 등 다른 언어로 출력하지 마세요. " +
-        "원문에 일본어나 다른 언어가 섞여 있어도 모두 한국어로 번역하세요. " +
-        "인명·지명 등 고유명사도 한국어로 표기하세요.";
+        "당신은 중국어 웹소설을 한국어로 옮기는 전문 출판 번역가입니다. " +
+        "출판된 소설처럼 자연스럽고 문학적인 한국어 문체로 번역하며, 어색한 직역은 매끄럽게 윤문(교정)합니다. " +
+        "문장과 문장, 문단과 문단이 자연스럽게 이어지도록 하고, 인물의 말투·호칭·어조를 처음부터 끝까지 일관되게 유지합니다. " +
+        "대사는 살아 있는 구어체로, 서술은 소설 서술체로 씁니다. " +
+        "출력은 반드시 한국어(한글)로만 작성하세요. 일본어·중국어·영어 등 다른 언어를 그대로 남기지 마세요. " +
+        "원문에 다른 언어가 섞여 있어도 모두 한국어로 옮기고, 인명·지명 등 고유명사는 한국어로 표기하되 같은 대상은 같은 표기로 통일합니다. " +
+        "원문의 의미를 임의로 더하거나 빼지 말고, 문단을 합치거나 나누지 마세요.";
 
     @Value("${claude.api.key}")
     private String apiKey;
@@ -41,17 +49,36 @@ public class GeminiService {
         // freezing the whole job. Fail fast and let the retry loop recover.
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(10_000);
-        factory.setReadTimeout(60_000);
+        // Opus is slower than Haiku and literary output is longer, so allow more
+        // time per call before treating it as a stall.
+        factory.setReadTimeout(120_000);
         this.restTemplate = new RestTemplate(factory);
     }
 
-    public List<String> translateBatch(List<String> texts, TranslationJob job) throws Exception {
-        StringBuilder prompt = new StringBuilder(
-            "다음 중국어 텍스트 " + texts.size() + "개를 각각 한국어로 번역하세요.\n" +
-            "번역 결과는 반드시 한국어로만 작성하고, 일본어·중국어를 그대로 두지 마세요.\n" +
-            "translations 배열에 입력 순서 그대로 " + texts.size() + "개의 번역을 넣으세요. " +
-            "문단을 합치거나 나누지 마세요.\n\n"
-        );
+    public List<String> translateBatch(List<String> texts, String precedingContext, String customPrompt, TranslationJob job) throws Exception {
+        StringBuilder prompt = new StringBuilder();
+        // Per-job user instructions (character names, honorifics, terminology,
+        // tone requests, etc.). Placed first and marked highest priority so the
+        // model applies them consistently across every chunk of this document.
+        if (customPrompt != null && !customPrompt.isBlank()) {
+            prompt.append("[사용자 요청사항 — 아래 지시를 최우선으로 반영하여 번역하세요]\n")
+                  .append(customPrompt.trim()).append("\n\n");
+        }
+        // Chunks are translated in parallel with no shared conversation, so the
+        // preceding source paragraphs are injected as read-only context. This is
+        // what makes the translation flow across chunk boundaries and keeps tone,
+        // character voice, and terminology consistent between chunks.
+        if (precedingContext != null && !precedingContext.isBlank()) {
+            prompt.append("아래는 이 장면 바로 앞의 원문입니다. 번역하지 말고, 말투·호칭·용어·문맥을 자연스럽게 이어가기 위한 참고로만 사용하세요.\n")
+                  .append("--- 앞 문맥(참고용, 번역 금지) ---\n")
+                  .append(precedingContext).append("\n")
+                  .append("--- 참고용 끝 ---\n\n");
+        }
+        prompt.append("이제 다음 중국어 텍스트 ").append(texts.size())
+              .append("개를 각각 출판 소설 문체의 자연스러운 한국어로 번역하세요.\n")
+              .append("- 앞 문맥과 매끄럽게 이어지도록 말투·호칭·용어를 일관되게 유지하세요.\n")
+              .append("- translations 배열에 입력 순서 그대로 ").append(texts.size())
+              .append("개의 번역을 넣으세요. 문단을 합치거나 나누지 마세요.\n\n");
         for (int i = 0; i < texts.size(); i++) {
             prompt.append("텍스트").append(i + 1).append(": ").append(texts.get(i)).append("\n");
         }
@@ -79,10 +106,12 @@ public class GeminiService {
         }
 
         // fallback: translate individually (plain text, no schema)
+        String customBlock = (customPrompt != null && !customPrompt.isBlank())
+            ? "[사용자 요청사항 — 최우선 반영]\n" + customPrompt.trim() + "\n\n" : "";
         List<String> results = new ArrayList<>();
         for (String text : texts) {
             try {
-                results.add(callClaude("다음 중국어를 한국어로 번역해주세요. 반드시 한국어로만, 번역문만 출력하세요:\n\n" + text, job, null));
+                results.add(callClaude(customBlock + "다음 중국어를 출판 소설 문체의 자연스러운 한국어로 번역하세요. 반드시 한국어로만, 번역문만 출력하세요:\n\n" + text, job, null));
             } catch (Exception e) {
                 results.add(text);
             }
@@ -117,7 +146,7 @@ public class GeminiService {
         message.put("content", prompt);
 
         Map<String, Object> body = new HashMap<>();
-        body.put("model", "claude-haiku-4-5-20251001");
+        body.put("model", "claude-opus-4-8");
         body.put("max_tokens", MAX_TOKENS);
         body.put("system", SYSTEM_PROMPT);
         body.put("messages", List.of(message));
