@@ -31,7 +31,8 @@ public class TranslatorController {
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "startChapter", defaultValue = "1") int startChapter,
             @RequestParam(value = "endChapter", defaultValue = "100") int endChapter,
-            @RequestParam(value = "customPrompt", required = false, defaultValue = "") String customPrompt) throws Exception {
+            @RequestParam(value = "customPrompt", required = false, defaultValue = "") String customPrompt,
+            @RequestParam(value = "fillMode", required = false, defaultValue = "false") boolean fillMode) throws Exception {
 
         // Guard against inverted or non-positive input.
         if (startChapter < 1) startChapter = 1;
@@ -42,11 +43,21 @@ public class TranslatorController {
         jobStore.save(job);
 
         translatorService.translateAsync(jobId, file.getBytes(), startChapter, endChapter,
-                customPrompt, file.getOriginalFilename());
+                customPrompt, file.getOriginalFilename(), fillMode);
 
         Map<String, String> response = new HashMap<>();
         response.put("jobId", jobId);
         return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/inspect")
+    public ResponseEntity<Map<String, Object>> inspect(@RequestParam("file") MultipartFile file) throws Exception {
+        int[] c = translatorService.inspect(file.getBytes());
+        Map<String, Object> r = new HashMap<>();
+        r.put("translated", c[0]);
+        r.put("untranslated", c[1]);
+        r.put("partial", c[0] > 0 && c[1] > 0);
+        return ResponseEntity.ok(r);
     }
 
     @GetMapping("/progress/{jobId}")

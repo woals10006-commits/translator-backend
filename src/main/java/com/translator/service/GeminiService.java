@@ -161,7 +161,7 @@ public class GeminiService {
 
         HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
 
-        int maxRetries = 3;
+        int maxRetries = 6;
         for (int i = 0; i < maxRetries; i++) {
             try {
                 Thread.sleep(300);
@@ -187,10 +187,8 @@ public class GeminiService {
                 }
                 return root.path("content").get(0).path("text").asText().trim();
             } catch (org.springframework.web.client.HttpClientErrorException.TooManyRequests e) {
-                // DIAGNOSTIC: 429 = rate limit hit. This is the "API 총량" suspect.
-                // Honor the server's retry-after (seconds) instead of a blind 30s
-                // stall, which wastes time whenever the real wait is shorter.
-                long waitMs = 30_000;
+                // 429 = rate limit. Honor the server's retry-after; else back off.
+                long waitMs = backoffMs(i, 20_000);
                 String retryAfter = e.getResponseHeaders() != null
                         ? e.getResponseHeaders().getFirst("retry-after") : null;
                 if (retryAfter != null) {
@@ -198,12 +196,39 @@ public class GeminiService {
                         waitMs = Math.min(60_000, Long.parseLong(retryAfter.trim()) * 1000);
                     } catch (NumberFormatException ignored) {}
                 }
-                log.warn("[429] 레이트 리밋 (시도 {}/{}), retry-after={} → {}ms 대기",
+                log.warn("[429] 레이트리밋 (시도 {}/{}), retry-after={} → {}ms 대기",
                         i + 1, maxRetries, retryAfter, waitMs);
                 if (i == maxRetries - 1) throw e;
                 Thread.sleep(waitMs);
+            } catch (org.springframework.web.client.HttpServerErrorException e) {
+                // 5xx incl. 529 overloaded — transient server-side, retry with backoff.
+                // (The old code did NOT retry these, so a brief overload permanently
+                //  failed the chunk — a prime suspect for the untranslated block.)
+                long waitMs = backoffMs(i, 5_000);
+                log.warn("[{}] 서버오류/과부하 (시도 {}/{}) → {}ms 대기",
+                        e.getStatusCode().value(), i + 1, maxRetries, waitMs);
+                if (i == maxRetries - 1) throw e;
+                Thread.sleep(waitMs);
+            } catch (org.springframework.web.client.ResourceAccessException e) {
+                // Network error / read timeout — transient, retry with backoff.
+                long waitMs = backoffMs(i, 5_000);
+                log.warn("[NET] 네트워크/타임아웃 (시도 {}/{}): {} → {}ms 대기",
+                        i + 1, maxRetries, e.getMessage(), waitMs);
+                if (i == maxRetries - 1) throw e;
+                Thread.sleep(waitMs);
+            } catch (org.springframework.web.client.HttpClientErrorException e) {
+                // Other 4xx (401 auth, 400 bad request, credit issues) — not transient.
+                // Log the exact body and propagate so classifyFatal can stop the job.
+                log.warn("[{}] 클라이언트오류(재시도 안함): {}",
+                        e.getStatusCode().value(), e.getResponseBodyAsString());
+                throw e;
             }
         }
-        throw new RuntimeException("번역 실패");
+        throw new RuntimeException("번역 실패 (최대 재시도 초과)");
+    }
+
+    // Exponential backoff capped at 60s: baseMs, 2x, 4x, 8x, ...
+    private long backoffMs(int attempt, long baseMs) {
+        return Math.min(60_000L, baseMs * (1L << Math.min(attempt, 10)));
     }
 }

@@ -27,7 +27,9 @@ public class TranslatorService {
     private static final int CHUNK_SIZE = 5;
     // Number of chunks translated concurrently. Network latency dominates, so
     // running several API calls in parallel is the main throughput win.
-    private static final int CONCURRENCY = 5;
+    // Lowered from 5 to reduce the initial request burst that tripped the API
+    // rate limit at the start of long runs (which left a big untranslated block).
+    private static final int CONCURRENCY = 3;
     // How many source paragraphs immediately before a chunk are passed to the
     // model as read-only context, so translations flow across chunk boundaries
     // and keep tone/terminology consistent. Small on purpose to limit added cost.
@@ -47,14 +49,14 @@ public class TranslatorService {
 
     @Async
     public void translateAsync(String jobId, byte[] fileBytes, int startChapter, int endChapter,
-                               String customPrompt, String originalFilename) {
+                               String customPrompt, String originalFilename, boolean fillMode) {
         TranslationJob job = jobStore.find(jobId);
         try {
             XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(fileBytes));
 
             long jobStart = System.currentTimeMillis();
 
-            List<XWPFParagraph> toTranslate = collectParagraphs(document, startChapter, endChapter);
+            List<XWPFParagraph> toTranslate = collectParagraphs(document, startChapter, endChapter, fillMode);
             job.setTotal(toTranslate.size());
 
             // Collecting nothing almost always means chapter headings weren't
@@ -151,8 +153,22 @@ public class TranslatorService {
             // Don't hand back an untranslated file dressed up as "완료".
             // Surface a real error when the run was a config failure or a total wipeout.
             if (fatalError != null) {
+                // Save whatever was translated before the fatal error (e.g. credit
+                // ran out) so the work isn't lost. Re-uploading this partial file in
+                // "미번역 채우기" mode fills only the remaining Chinese paragraphs.
+                String partialPath = null;
+                try {
+                    ByteArrayOutputStream partial = new ByteArrayOutputStream();
+                    document.write(partial);
+                    partialPath = saveResultToDisk(partial.toByteArray(), originalFilename, startChapter, endChapter);
+                    job.setSavedPath(partialPath);
+                    log.warn("[JOB {}] 치명적 오류 — 진행분 부분 저장: {}", jobId, partialPath);
+                } catch (Exception ex) {
+                    log.error("[JOB {}] 진행분 저장 실패: {}", jobId, ex.getMessage());
+                }
                 document.close();
-                job.setError(fatalError);
+                job.setError(fatalError
+                        + (partialPath != null ? " 지금까지 번역된 진행분은 저장되었으니, '미번역 채우기'로 이어서 완성할 수 있어요." : ""));
                 job.setDone(true);
                 log.error("[JOB {}] 치명적 오류로 중단: {}", jobId, fatalError);
                 return;
@@ -169,15 +185,20 @@ public class TranslatorService {
             // the source language (a chunk that failed, or a paragraph missed in
             // the first pass), so the saved file has as few untranslated
             // paragraphs as possible. Only the leftovers are sent, so this is cheap.
-            retryUntranslated(jobId, toTranslate, customPrompt, job);
-
-            // Report the accurate final count: paragraphs still in Chinese after
-            // the retry pass (more precise than the chunk-level error tally).
-            int stillUntranslated = 0;
-            for (XWPFParagraph p : toTranslate) {
-                if (hasUntranslatedChinese(p.getText())) stillUntranslated++;
+            // Repeat the retry pass until nothing is left untranslated, or up to
+            // 3 rounds, or a round makes no progress. This is what guarantees the
+            // saved file isn't left with a big untranslated block like before.
+            for (int round = 1; round <= 3; round++) {
+                int before = countUntranslated(toTranslate);
+                if (before == 0) break;
+                log.info("[JOB {}] 자동 재시도 라운드 {}/3 — 미번역 {}문단", jobId, round, before);
+                retryUntranslated(jobId, toTranslate, customPrompt, job);
+                if (countUntranslated(toTranslate) >= before) break; // no progress → stop
             }
+
+            int stillUntranslated = countUntranslated(toTranslate);
             job.setErrorCount(stillUntranslated);
+            log.info("[JOB {}] 최종 미번역 문단: {}", jobId, stillUntranslated);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             document.write(out);
@@ -288,6 +309,39 @@ public class TranslatorService {
         }
     }
 
+    // Count already-translated (Korean) vs still-untranslated (Chinese) paragraphs
+    // so the UI can offer "start over" vs "continue filling" for a partial file.
+    // Returns [translatedCount, untranslatedCount].
+    public int[] inspect(byte[] fileBytes) throws Exception {
+        XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(fileBytes));
+        int translated = 0, untranslated = 0;
+        for (XWPFParagraph p : document.getParagraphs()) {
+            String t = p.getText();
+            if (isBlank(t)) continue;
+            if (hasUntranslatedChinese(t)) untranslated++;
+            else if (hasKorean(t)) translated++;
+        }
+        document.close();
+        return new int[]{translated, untranslated};
+    }
+
+    // A paragraph counts as translated if it contains any Hangul syllable.
+    private boolean hasKorean(String text) {
+        if (text == null) return false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= 0xAC00 && c <= 0xD7A3) return true;
+        }
+        return false;
+    }
+
+    // Count paragraphs still left in the source language (Chinese-only).
+    private int countUntranslated(List<XWPFParagraph> paras) {
+        int n = 0;
+        for (XWPFParagraph p : paras) if (hasUntranslatedChinese(p.getText())) n++;
+        return n;
+    }
+
     // A paragraph is considered untranslated if it still contains Chinese (CJK
     // ideographs) but no Korean (Hangul syllables). Since the output is Korean,
     // a Chinese-only paragraph reliably marks a failed/missed translation.
@@ -354,10 +408,20 @@ public class TranslatorService {
     // (1-based, inclusive). Chapters are counted from the document's real first
     // chapter, so paragraphs before startChapter are skipped and we stop once we
     // pass endChapter — letting the user translate e.g. only 20화~50화.
-    private List<XWPFParagraph> collectParagraphs(XWPFDocument document, int startChapter, int endChapter) {
+    private List<XWPFParagraph> collectParagraphs(XWPFDocument document, int startChapter, int endChapter, boolean fillMode) {
         List<XWPFParagraph> result = new ArrayList<>();
-        int chapterCount = 0;
 
+        // Fill mode: ignore chapter boundaries and collect ONLY paragraphs still
+        // in the source language (Chinese). Used to complete a partially-translated
+        // file — re-upload it and this fills just the gaps, skipping done work.
+        if (fillMode) {
+            for (XWPFParagraph p : document.getParagraphs()) {
+                if (hasUntranslatedChinese(p.getText())) result.add(p);
+            }
+            return result;
+        }
+
+        int chapterCount = 0;
         for (XWPFParagraph p : document.getParagraphs()) {
             if (isChapterHeading(p, chapterCount + 1)) {
                 chapterCount++;
@@ -395,6 +459,13 @@ public class TranslatorService {
     private static final Pattern NUMBERED_HEADING =
             Pattern.compile("^(\\d+)\\.[\\s\\u00a0\\u3000]");
 
+    // "<n><title>" headings — a number then a CJK title, either attached
+    // (1一朝穿越) or space-separated (1   喜提贵子). Detected structurally; the
+    // printed number is NOT trusted for sequencing because some sources have
+    // numbering typos (6화 printed "5", 18 printed "85", …).
+    private static final Pattern NUMBER_TITLE_HEADING =
+            Pattern.compile("^\\d{1,4}\\s*[\\u4E00-\\u9FFF]");
+
     private boolean isChapterHeading(XWPFParagraph paragraph, int expectedNumber) {
         String style = paragraph.getStyle();
         if (style != null && (style.toLowerCase().startsWith("heading"))) return true;
@@ -417,6 +488,15 @@ public class TranslatorService {
             } catch (NumberFormatException e) {
                 return false;
             }
+        }
+        // "<n><title>" headings (e.g. 1一朝穿越 / 1   喜提贵子). Structural match on a
+        // SHORT line: a number then a CJK title. The number is NOT required to be
+        // sequential — some sources mis-number chapters, and strict sequencing
+        // would desync on the first typo and then grab the whole book. Body
+        // paragraphs are long or start with the text (not a digit), so they don't
+        // match. Each such line simply counts as the next chapter.
+        if (text.length() <= 30 && NUMBER_TITLE_HEADING.matcher(text).find()) {
+            return true;
         }
         return false;
     }

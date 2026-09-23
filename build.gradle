@@ -11,6 +11,13 @@ java {
     sourceCompatibility = '17'
 }
 
+// 소스 파일은 UTF-8 로 저장돼 있는데, JDK 17 의 javac 는 윈도우 기본 문자셋
+// (한글 윈도우는 CP949)으로 읽는다. 지정하지 않으면 코드 안의 한글 문자열이
+// 깨진 채로 컴파일돼 로그와 결과 파일에 그대로 나온다.
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
 repositories {
     mavenCentral()
 }

@@ -14,3 +14,6 @@ Thumbs.db
 # Secrets — never commit API keys or local overrides
 *.env
 application-local.properties
+
+# Runtime logs — contain translated novel text and cost figures
+logs/
